@@ -1,10 +1,11 @@
 package com.jdaalba.words.application
 
-import com.jdaalba.words.{Gray, Green, Orange, Writer}
 import com.jdaalba.words.Writer.Board
 import com.jdaalba.words.config.SeleniumConfig
 import com.jdaalba.words.io.Game
+import com.jdaalba.words.{Gray, Green, Orange, Writer}
 import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.exceptions.NoSuchRecordException
 
 import java.util.logging.Logger
 import scala.annotation.tailrec
@@ -20,16 +21,18 @@ object GameDirector extends App {
   private val session = driver.session()
 
   try {
-    for (i <- 1 to 10) {
+    for (i <- 300 to 400) {
       game.setAddress(s"https://lapalabradeldia.com/archivo/normal/$i")
-      run(List()) match {
-        case Some(r) => log.info(s"Result for $i is $r")
-        case None => log.warning(s"No known response for $i")
+      try {
+        run(List()) match {
+          case Some(r) => log.info(s"Result for $i is $r")
+          case None => log.warning(s"No known response for $i")
+        }
+      } catch {
+        case e: NoSuchRecordException => log.severe(s"Not found $e")
+        case e: Throwable => log.severe(s"Exception: $e")
       }
     }
-
-  } catch {
-    case e: Throwable => log.severe(s"Exception: $e")
   } finally {
     config.close()
   }
@@ -55,7 +58,7 @@ object GameDirector extends App {
 
   private def execute(word: String): Board = game.apply(word).asScala
     .map(m => m.stream()
-      .map{
+      .map {
         case (c, "rgb(117, 117, 117)") => Gray(c)
         case (c, "rgb(228, 168, 29)") => Orange(c)
         case (c, "rgb(67, 160, 71)") => Green(c)
@@ -66,18 +69,21 @@ object GameDirector extends App {
     ).toList
 
   def next(board: Board): String = {
-    if (board.isEmpty) {
-      "QUESO"
-    } else {
-
-      val queryRes: String = session.executeRead(tx => {
-        val query = Writer.play(board)
-        log.info(s"@@@ executing $query")
-        val r = tx.run(query)
-        r.next().fields().stream().map(p => p.value().asMap().get("_id")).findAny().get()
-      }).toString
-      log.info(s"""Next: "$queryRes"""")
-      queryRes
-    }
+    val query =      if (board.isEmpty) {
+        """match (w:Word)
+          |where w.uniqueLetters is not null
+          |return w
+          |order by w.uniqueLetters desc, w.score desc
+          |limit 1""".stripMargin
+      } else {
+        Writer.play(board) + " order by w.uniqueLetters desc, w.score desc"
+      }
+    val queryRes: String = session.executeRead(tx => {
+      log.info(s"@@@ executing $query")
+      val r = tx.run(query)
+      r.next().fields().stream().map(p => p.value().asMap().get("_id")).findAny().get()
+    }).toString
+    log.info(s"""Next: "$queryRes"""")
+    queryRes
   }
 }
